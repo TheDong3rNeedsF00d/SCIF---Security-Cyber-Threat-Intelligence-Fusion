@@ -52,7 +52,10 @@ router.get("/pivot", iocPivot, validateIOC, async (req, res) => {
   jobs.push(
     fetch("https://threatfox-api.abuse.ch/api/v1/", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Auth-Key": process.env.THREATFOX_KEY || "",
+      },
       body: JSON.stringify({ query: "search_ioc", search_term: value }),
     }).then(r => r.json()).then(d => { out.threatfox = d.data || []; }).catch(() => {})
   );
@@ -60,7 +63,10 @@ router.get("/pivot", iocPivot, validateIOC, async (req, res) => {
   jobs.push(
     fetch("https://urlhaus-api.abuse.ch/v1/host/", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Auth-Key": process.env.URLHAUS_KEY || "",
+      },
       body: JSON.stringify({ host: value }),
     }).then(r => r.json()).then(d => { out.urlhaus = d; }).catch(() => {})
   );

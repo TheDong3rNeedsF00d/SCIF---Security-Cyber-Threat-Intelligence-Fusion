@@ -1,8 +1,16 @@
 import React, { useState, useEffect } from "react";
 import "./dashboard.css";
-const tok = () => sessionStorage.getItem("scif_token") || "";
+const tok = () => localStorage.getItem("scif_token") || "";
 const apiFetch = (url, opts = {}) =>
-  fetch(url, { ...opts, headers: { "Content-Type": "application/json", "x-scif-token": tok(), ...(opts.headers || {}) } });
+  fetch(url, { 
+    ...opts, 
+    headers: { 
+      "Content-Type": "application/json", 
+      "x-scif-token": tok(), 
+      "Cache-Control": "no-cache",
+      ...(opts.headers || {}) 
+    } 
+  });
 
 const sanitize = (str) => {
   if (typeof str !== "string") return String(str ?? "");
@@ -85,11 +93,11 @@ function LoginScreen({ onAuth, checking }) {
       const r = await fetch("/api/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password: password.trim() }),
       });
       const d = await r.json();
       if (d.ok) {
-        sessionStorage.setItem("scif_token", password);
+        localStorage.setItem("scif_token", password.trim());
         onAuth(true);
       } else {
         setError("Incorrect password");
@@ -142,21 +150,27 @@ export default function SCIFDashboard() {
   const [activePanel, setActivePanel] = useState("overview");
   const [authenticated, setAuthenticated] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: "" }) })
-      .then(r => r.json())
-      .then(d => { if (d.ok) setAuthenticated(true); setAuthChecked(true); })
-      .catch(() => setAuthChecked(true));
-  }, []);
-
-  if (!authChecked) return <LoginScreen onAuth={setAuthenticated} checking />;
-  if (!authenticated) return <LoginScreen onAuth={setAuthenticated} />;
-
   const [workbook, setWorkbook] = useState({ campaign: "", entries: [] });
-
   const [stats, setStats] = useState({ kevCount: 0, urlhausCount: 0, threatfoxCount: 0, cveCount: 0 });
   const [statsLoaded, setStatsLoaded] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("scif_token");
+    if (stored) {
+      setAuthenticated(true);
+      setAuthChecked(true);
+      return;
+    }
+    fetch("/api/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: "" }),
+    })
+      .then(r => r.json())
+      .then(d => { if (d.ok) setAuthenticated(true); })
+      .catch(() => {})
+      .finally(() => setAuthChecked(true));
+  }, []);
 
   const addToWorkbook = (entry) =>
     setWorkbook(p => ({ ...p, entries: [{ ...entry, ts: new Date().toISOString(), id: Date.now() }, ...p.entries] }));
@@ -168,11 +182,16 @@ export default function SCIFDashboard() {
           kevCount: kev.status === "fulfilled" ? kev.value.length : 0,
           urlhausCount: uh.status === "fulfilled" ? uh.value.length : 0,
           threatfoxCount: tf.status === "fulfilled" ? tf.value.length : 0,
-          cveCount: 0  // populated separately when CVE tab loads
+          cveCount: 0
         });
       })
       .finally(() => setStatsLoaded(true));
   }, []);
+
+  // early returns AFTER all hooks
+  if (!authChecked) return <LoginScreen onAuth={setAuthenticated} checking />;
+  if (!authenticated) return <LoginScreen onAuth={setAuthenticated} />;
+
 
   const panels = [
     { id: "overview", label: "Overview" },
@@ -376,12 +395,6 @@ function IOCPivot({ addToWorkbook }) {
             {loading ? "Running…" : "Pivot"}
           </button>
         </div>
-
-        {!keys.abuseipdb && !keys.virustotal && (
-          <div className="warning-banner" style={{ marginBottom: 12 }}>
-            No API keys set. Results limited to ThreatFox and URLhaus (no-auth sources). Add keys in the sidebar to enable AbuseIPDB and VirusTotal. Shodan InternetDB runs automatically with no key.
-          </div>
-        )}
 
         {loading && <Loader label="Querying sources" />}
         {error && <div style={{ color: "var(--red)", fontSize: 12, fontFamily: "var(--font-mono)" }}>{error}</div>}
@@ -671,43 +684,22 @@ function LiveFeeds() {
   // feodo direct download endpoint blocks CORS so we pull from threatfox filtered to botnet_cc
 
   const load = async (feedId) => {
-    setLoading((p) => ({ ...p, [feedId]: true }));
+    setLoading(p => ({ ...p, [feedId]: true }));
     try {
-      let result;
-      if (feedId === "urlhaus")   result = await fetchURLhaus();
-      if (feedId === "threatfox") result = await fetchThreatFox();
-      if (feedId === "feodo") {
-        const r = await fetch("https://threatfox-api.abuse.ch/api/v1/", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: "get_iocs", days: 1 })
-        });
-        if (!r.ok) throw new Error("Feed unavailable");
-        const d = await r.json();
-        const all = d.data || [];
-        result = all.filter((i) => i.threat_type === "botnet_cc").slice(0, 30);
-        if (result.length === 0) result = all.slice(0, 30);
-      }
-      if (feedId === "malwarebazaar") {
-        const r = await fetch("https://mb-api.abuse.ch/api/v1/", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: "get_recent", selector: "time" })
-        });
-        const d = await r.json();
-        result = (d.data || []).slice(0, 20);
-      }
-      setData((p) => ({ ...p, [feedId]: result }));
+      const r = await apiFetch(`/api/feeds/${feedId}`);
+      if (!r.ok) throw new Error("Feed unavailable");
+      const result = await r.json();
+      setData(p => ({ ...p, [feedId]: result }));
     } catch (e) {
-      setData((p) => ({ ...p, [feedId]: { error: e.message } }));
+      setData(p => ({ ...p, [feedId]: { error: e.message } }));
     } finally {
-      setLoading((p) => ({ ...p, [feedId]: false }));
+      setLoading(p => ({ ...p, [feedId]: false }));
     }
   };
 
   useEffect(() => { load(tab); }, [tab]);
 
   const feeds = [
-    { id: "urlhaus",      label: "URLhaus",       badge: "Malware URLs" },
     { id: "threatfox",    label: "ThreatFox",     badge: "IOCs" },
     { id: "feodo",        label: "Feodo C2",      badge: "Botnet IPs" },
     { id: "malwarebazaar",label: "MalwareBazaar",  badge: "Samples" },
@@ -868,37 +860,16 @@ function ExposureMonitor({ addToWorkbook }) {
     const d = domain.trim();
     if (!d) return;
     setLoading(true); setResults(null);
-    const out = {};
-
-    const jobs = [];
-
-    // crt.sh — always available
-    jobs.push(fetchCrtSh(`%.${d}`).then((r) => { out.certs = r; }).catch(() => {}));
-
-    // HIBP — key required
-    if (keys.hibp) {
-      jobs.push(fetchHIBP(d, keys.hibp).then((r) => { out.hibp = r; }).catch((e) => { out.hibp_err = e.message; }));
+    try {
+      const r = await apiFetch(`/api/exposure/scan?domain=${encodeURIComponent(d)}`);
+      if (!r.ok) throw new Error("Exposure scan failed");
+      const data = await r.json();
+      setResults({ domain: data.domain, data: data.results });
+    } catch (e) {
+      setResults({ domain: d, data: { error: e.message } });
+    } finally {
+      setLoading(false);
     }
-
-    // URLhaus host check — always available
-    jobs.push(
-      fetch("https://urlhaus-api.abuse.ch/v1/host/", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ host: d })
-      }).then((r) => r.json()).then((r) => { out.urlhaus = r; }).catch(() => {})
-    );
-
-    // ThreatFox search
-    jobs.push(
-      fetch("https://threatfox-api.abuse.ch/api/v1/", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: "search_ioc", search_term: d })
-      }).then((r) => r.json()).then((r) => { out.threatfox = r.data || []; }).catch(() => {})
-    );
-
-    await Promise.allSettled(jobs);
-    setResults({ domain: d, data: out });
-    setLoading(false);
   };
 
   return (

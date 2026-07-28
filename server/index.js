@@ -7,13 +7,14 @@ const compression = require("compression");
 const path = require("path");
 const fs = require("fs");
 
+const { initDb } = require("./db/database");
 const { auth: authLimiter } = require("./middleware/rateLimit");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 const dataDir = path.join(__dirname, "data");
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true }); // docker volume sometimes beats us here, recursive handles it
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -64,8 +65,16 @@ if (fs.existsSync(clientBuild)) {
   app.get("*", (_req, res) => res.sendFile(path.join(clientBuild, "index.html")));
 }
 
-app.listen(PORT, () => {
-  const configured = ["ABUSEIPDB_KEY", "VIRUSTOTAL_KEY", "HIBP_KEY"].filter(k => process.env[k]);
-  console.log(`[scif] :${PORT} | auth=${!!process.env.DASHBOARD_PASSWORD} | keys=${configured.join(",")||"none"}`);
-  if (!process.env.DASHBOARD_PASSWORD) console.warn("[scif] WARNING: no password set");
-});
+// sql.js requires async init before server can start
+initDb()
+  .then(() => {
+    app.listen(PORT, () => {
+      const configured = ["ABUSEIPDB_KEY", "VIRUSTOTAL_KEY", "THREATFOX_KEY"].filter(k => process.env[k]);
+      console.log("[scif] :" + PORT + " | auth=" + !!process.env.DASHBOARD_PASSWORD + " | keys=" + (configured.join(",") || "none"));
+      if (!process.env.DASHBOARD_PASSWORD) console.warn("[scif] WARNING: no password set");
+    });
+  })
+  .catch(err => {
+    console.error("[scif] failed to initialize database:", err);
+    process.exit(1);
+  });
